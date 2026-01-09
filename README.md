@@ -91,10 +91,10 @@ docker-compose up -d
 - **Heroku**
 
 > 如果你希望“用户用邮箱登录后才能访问”，优先用平台自带访问控制（如果你的 Cloud 界面提供了 Require sign-in/Manage access）。
-> 若你使用的是 Community Cloud 且没有这些选项，建议启用应用内登录：在 Secrets 里设置 `LAB_DIARY_AUTH_MODE=email_otp` 并配置 SMTP（见 `.streamlit/secrets.toml.example`）。
+> 若你使用的是 Community Cloud 且没有这些选项，建议启用应用内登录：在 Secrets 里设置 `LAB_DIARY_AUTH_MODE=email_otp` 并配置 SMTP（见 `.streamlit/secrets.toml.example`）。如果你的部署平台禁止 SMTP 出网，可改用 `LAB_DIARY_AUTH_MODE=password`（共享口令登录）。
 > 另：云平台的本地文件通常不保证持久化；若要长期、多用户使用，建议自托管挂载数据卷或接入外部数据库。
 >
-> 多用户数据隔离：本项目会在检测到登录邮箱后，把每个用户的数据保存到独立目录（`data/users/<hash>/`）；可用 `LAB_DIARY_AUTH_MODE=email_otp`（应用内登录）或 `LAB_DIARY_REQUIRE_SIGNIN=1`（平台登录，若可用）来强制要求登录。
+> 多用户数据隔离：本项目会在检测到登录邮箱后，把每个用户的数据保存到独立目录（`data/users/<hash>/`）；可用 `LAB_DIARY_AUTH_MODE=email_otp`（应用内邮箱验证码登录）、`LAB_DIARY_AUTH_MODE=password`（共享口令登录）或 `LAB_DIARY_REQUIRE_SIGNIN=1`（平台登录，若可用）来强制要求登录。
 
 详细部署步骤请参考 [DEPLOYMENT.md](DEPLOYMENT.md)
 

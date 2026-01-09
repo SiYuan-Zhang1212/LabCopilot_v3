@@ -14,6 +14,7 @@ import struct
 import gzip
 import hashlib
 import secrets as py_secrets
+import hmac
 import smtplib
 import ssl
 import zipfile
@@ -27,12 +28,6 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 from openai import OpenAI
-import websocket
-from audio_recorder_streamlit import audio_recorder
-import plotly.graph_objects as go
-import plotly.express as px
-from collections import Counter
-import numpy as np
 
 try:
     import audioop  # removed in newer Python versions; optional in this app
@@ -116,12 +111,14 @@ def _parse_csv_list(value: str) -> list[str]:
 
 
 def _get_auth_settings() -> dict:
-    mode = str(_get_setting("LAB_DIARY_AUTH_MODE", "")).strip().lower()  # "email_otp" or ""
+    mode = str(_get_setting("LAB_DIARY_AUTH_MODE", "")).strip().lower()  # "email_otp" | "password" | ""
     allowed_domains = _parse_csv_list(_get_setting("LAB_DIARY_ALLOWED_EMAIL_DOMAINS", ""))
     allowed_emails = _parse_csv_list(_get_setting("LAB_DIARY_ALLOWED_EMAILS", ""))
     session_minutes = int(str(_get_setting("LAB_DIARY_AUTH_SESSION_MINUTES", "720")).strip() or "720")
     code_minutes = int(str(_get_setting("LAB_DIARY_AUTH_CODE_MINUTES", "10")).strip() or "10")
     dev_show_code = str(_get_setting("LAB_DIARY_AUTH_DEV_SHOW_CODE", "0")).strip().lower() in ("1", "true", "yes")
+    shared_password = str(_get_setting("LAB_DIARY_SHARED_PASSWORD", "")).strip()
+    shared_password_hash = str(_get_setting("LAB_DIARY_SHARED_PASSWORD_HASH", "")).strip().lower()
 
     smtp_host = str(_get_setting("SMTP_HOST", "")).strip()
     smtp_port = int(str(_get_setting("SMTP_PORT", "587")).strip() or "587")
@@ -129,6 +126,9 @@ def _get_auth_settings() -> dict:
     smtp_password = str(_get_setting("SMTP_PASSWORD", "")).strip()
     smtp_from = str(_get_setting("SMTP_FROM", "")).strip()
     smtp_use_tls = str(_get_setting("SMTP_USE_TLS", "1")).strip().lower() in ("1", "true", "yes")
+    smtp_use_ssl = str(_get_setting("SMTP_USE_SSL", "0")).strip().lower() in ("1", "true", "yes")
+    smtp_timeout = int(str(_get_setting("SMTP_TIMEOUT", "20")).strip() or "20")
+    smtp_debug = str(_get_setting("SMTP_DEBUG", "0")).strip().lower() in ("1", "true", "yes")
 
     return {
         "mode": mode,
@@ -137,12 +137,17 @@ def _get_auth_settings() -> dict:
         "session_minutes": session_minutes,
         "code_minutes": code_minutes,
         "dev_show_code": dev_show_code,
+        "shared_password": shared_password,
+        "shared_password_hash": shared_password_hash,
         "smtp_host": smtp_host,
         "smtp_port": smtp_port,
         "smtp_user": smtp_user,
         "smtp_password": smtp_password,
         "smtp_from": smtp_from,
         "smtp_use_tls": smtp_use_tls,
+        "smtp_use_ssl": smtp_use_ssl,
+        "smtp_timeout": smtp_timeout,
+        "smtp_debug": smtp_debug,
     }
 
 
@@ -175,15 +180,44 @@ def _send_email_login_code(email: str, code: str, auth: dict) -> None:
         "如非本人操作，请忽略此邮件。"
     )
 
+    host = auth["smtp_host"]
+    port = auth["smtp_port"]
+    timeout = auth["smtp_timeout"]
     context = ssl.create_default_context()
-    with smtplib.SMTP(auth["smtp_host"], auth["smtp_port"], timeout=20) as server:
-        server.ehlo()
-        if auth["smtp_use_tls"]:
-            server.starttls(context=context)
+
+    step = "connect"
+    try:
+        if auth["smtp_use_ssl"]:
+            server = smtplib.SMTP_SSL(host, port, timeout=timeout, context=context)
+        else:
+            server = smtplib.SMTP(host, port, timeout=timeout)
+        try:
+            if auth["smtp_debug"]:
+                server.set_debuglevel(1)
+            step = "ehlo"
             server.ehlo()
-        if auth["smtp_user"] and auth["smtp_password"]:
-            server.login(auth["smtp_user"], auth["smtp_password"])
-        server.send_message(msg)
+            if auth["smtp_use_tls"] and not auth["smtp_use_ssl"]:
+                step = "starttls"
+                server.starttls(context=context)
+                step = "ehlo_after_starttls"
+                server.ehlo()
+            if auth["smtp_user"] and auth["smtp_password"]:
+                step = "login"
+                server.login(auth["smtp_user"], auth["smtp_password"])
+            step = "send_message"
+            server.send_message(msg)
+        finally:
+            try:
+                step = "quit"
+                server.quit()
+            except Exception:
+                pass
+    except Exception as exc:
+        raise RuntimeError(
+            f"SMTP failed at step={step}. "
+            f"Check SMTP_HOST/PORT, TLS vs SSL (587=STARTTLS, 465=SSL), and whether the hosting platform blocks outbound SMTP. "
+            f"Original error: {exc!r}"
+        ) from exc
 
 
 def _clear_auth_session() -> None:
@@ -198,7 +232,7 @@ def require_app_login() -> None:
     Enable by setting `LAB_DIARY_AUTH_MODE=email_otp` in Streamlit Cloud secrets.
     """
     auth = _get_auth_settings()
-    if auth["mode"] != "email_otp":
+    if auth["mode"] not in ("email_otp", "password"):
         return
 
     now = datetime.now()
@@ -209,7 +243,10 @@ def require_app_login() -> None:
 
     st.set_page_config(page_title="Lab Diary AI 登录", layout="centered", page_icon="🔐")
     st.title("🔐 登录 Lab Diary AI")
-    st.caption("输入邮箱获取验证码登录。")
+    if auth["mode"] == "email_otp":
+        st.caption("输入邮箱获取验证码登录。")
+    else:
+        st.caption("输入邮箱 + 共享口令登录（无需发验证码）。")
 
     email = st.text_input("邮箱", key="auth_input_email", placeholder="name@domain.com").strip().lower()
     if email and not _is_allowed_login_email(email, auth):
@@ -218,55 +255,87 @@ def require_app_login() -> None:
         else:
             st.warning("当前未配置允许邮箱/域名白名单：任何邮箱都可以请求验证码。建议设置 `LAB_DIARY_ALLOWED_EMAIL_DOMAINS`。")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("发送验证码", use_container_width=True):
+    if auth["mode"] == "email_otp":
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("发送验证码", use_container_width=True):
+                if not email or "@" not in email:
+                    st.error("请输入正确的邮箱。")
+                elif not _is_allowed_login_email(email, auth):
+                    st.error("该邮箱不在允许范围内。")
+                else:
+                    code = f"{py_secrets.randbelow(1000000):06d}"
+                    st.session_state["auth_pending_email"] = email
+                    st.session_state["auth_code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()
+                    st.session_state["auth_code_expires_at"] = now + timedelta(minutes=auth["code_minutes"])
+                    st.session_state["auth_code_sent_at"] = now
+                    try:
+                        _send_email_login_code(email, code, auth)
+                        if auth["dev_show_code"]:
+                            st.info(f"DEV 模式：验证码是 {code}")
+                        st.success("验证码已发送，请查收邮箱。")
+                    except Exception as exc:
+                        st.error(f"发送失败：{exc}")
+
+        with col2:
+            code_input = st.text_input("验证码", key="auth_input_code", placeholder="6 位数字").strip()
+            if st.button("登录", type="primary", use_container_width=True):
+                pending_email = (st.session_state.get("auth_pending_email") or "").strip().lower()
+                code_hash = st.session_state.get("auth_code_hash")
+                code_expires = st.session_state.get("auth_code_expires_at")
+
+                if not pending_email:
+                    st.error("请先发送验证码。")
+                elif not isinstance(code_expires, datetime) or code_expires <= now:
+                    st.error("验证码已过期，请重新发送。")
+                elif not code_input or not code_input.isdigit() or len(code_input) != 6:
+                    st.error("请输入 6 位数字验证码。")
+                else:
+                    input_hash = hashlib.sha256(code_input.encode("utf-8")).hexdigest()
+                    if input_hash != code_hash:
+                        st.error("验证码错误。")
+                    else:
+                        st.session_state["auth_email"] = pending_email
+                        st.session_state["auth_expires_at"] = now + timedelta(minutes=auth["session_minutes"])
+                        for k in ("auth_pending_email", "auth_code_hash", "auth_code_expires_at", "auth_code_sent_at", "auth_input_code"):
+                            if k in st.session_state:
+                                del st.session_state[k]
+                        st.success("登录成功。")
+                        st.rerun()
+    else:
+        password_input = st.text_input("共享口令", key="auth_input_password", type="password").strip()
+        if st.button("登录", type="primary", use_container_width=True):
             if not email or "@" not in email:
                 st.error("请输入正确的邮箱。")
             elif not _is_allowed_login_email(email, auth):
                 st.error("该邮箱不在允许范围内。")
+            elif not password_input:
+                st.error("请输入共享口令。")
+            elif not auth.get("shared_password") and not auth.get("shared_password_hash"):
+                st.error("未配置共享口令：请在 Secrets 中设置 `LAB_DIARY_SHARED_PASSWORD` 或 `LAB_DIARY_SHARED_PASSWORD_HASH`。")
             else:
-                code = f"{py_secrets.randbelow(1000000):06d}"
-                st.session_state["auth_pending_email"] = email
-                st.session_state["auth_code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()
-                st.session_state["auth_code_expires_at"] = now + timedelta(minutes=auth["code_minutes"])
-                st.session_state["auth_code_sent_at"] = now
-                try:
-                    _send_email_login_code(email, code, auth)
-                    if auth["dev_show_code"]:
-                        st.info(f"DEV 模式：验证码是 {code}")
-                    st.success("验证码已发送，请查收邮箱。")
-                except Exception as exc:
-                    st.error(f"发送失败：{exc}")
-
-    with col2:
-        code_input = st.text_input("验证码", key="auth_input_code", placeholder="6 位数字").strip()
-        if st.button("登录", type="primary", use_container_width=True):
-            pending_email = (st.session_state.get("auth_pending_email") or "").strip().lower()
-            code_hash = st.session_state.get("auth_code_hash")
-            code_expires = st.session_state.get("auth_code_expires_at")
-
-            if not pending_email:
-                st.error("请先发送验证码。")
-            elif not isinstance(code_expires, datetime) or code_expires <= now:
-                st.error("验证码已过期，请重新发送。")
-            elif not code_input or not code_input.isdigit() or len(code_input) != 6:
-                st.error("请输入 6 位数字验证码。")
-            else:
-                input_hash = hashlib.sha256(code_input.encode("utf-8")).hexdigest()
-                if input_hash != code_hash:
-                    st.error("验证码错误。")
+                ok = False
+                if auth.get("shared_password_hash"):
+                    digest = hashlib.sha256(password_input.encode("utf-8")).hexdigest().lower()
+                    ok = hmac.compare_digest(digest, auth["shared_password_hash"])
+                elif auth.get("shared_password"):
+                    ok = hmac.compare_digest(password_input, auth["shared_password"])
+                if not ok:
+                    st.error("共享口令错误。")
                 else:
-                    st.session_state["auth_email"] = pending_email
+                    st.session_state["auth_email"] = email
                     st.session_state["auth_expires_at"] = now + timedelta(minutes=auth["session_minutes"])
-                    for k in ("auth_pending_email", "auth_code_hash", "auth_code_expires_at", "auth_code_sent_at", "auth_input_code"):
+                    for k in ("auth_pending_email", "auth_code_hash", "auth_code_expires_at", "auth_code_sent_at", "auth_input_code", "auth_input_password"):
                         if k in st.session_state:
                             del st.session_state[k]
                     st.success("登录成功。")
                     st.rerun()
 
     st.divider()
-    st.caption("需要帮助？请联系管理员配置邮件服务器（SMTP）和允许域名白名单。")
+    if auth["mode"] == "email_otp":
+        st.caption("需要帮助？请联系管理员配置邮件服务器（SMTP）和允许域名白名单。")
+    else:
+        st.caption("需要帮助？请联系管理员配置共享口令和允许域名白名单。")
     st.stop()
 
 
@@ -302,16 +371,9 @@ def get_storage_paths() -> dict:
         "db_path": db_path,
     }
 
-# --- 火山引擎语音识别配置 ---
-VOLC_ASR_WS_URL = _get_setting("VOLC_ASR_WS_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async")
-VOLC_ASR_APP_KEY = _get_setting("VOLC_ASR_APP_KEY", "")
-VOLC_ASR_ACCESS_KEY = _get_setting("VOLC_ASR_ACCESS_KEY", "")
-VOLC_ASR_RESOURCE_ID = _get_setting("VOLC_ASR_RESOURCE_ID", "volc.bigasr.sauc.duration")
-VOLC_AUDIO_SAMPLE_RATE = 16000
-VOLC_AUDIO_SAMPLE_WIDTH = 2
-VOLC_AUDIO_CHANNELS = 1
-VOLC_AUDIO_FORMAT = "pcm"
-VOLC_AUDIO_CHUNK_MS = 200
+# --- 语音识别（暂时下线）---
+# 你之前配置的火山引擎语音识别相关代码已单独存档，方便之后恢复：
+# 见 `archived/volc_asr_reference.py`
 
 # --- DeepSeek AI 配置 ---
 DEEPSEEK_API_KEY = _get_setting("DEEPSEEK_API_KEY", "")
@@ -600,91 +662,6 @@ def convert_document_bytes_to_markdown(data_bytes: bytes, origin_name: str, ext:
             return converted.decode("utf-8")
         return _decode_text_full(data_bytes)
     return ""
-
-# ==================== 语音识别 ====================
-ERROR_CODE_MAP = {
-    45000001: "参数无效",
-    45000151: "音频格式错误",
-    45000152: "音频过短",
-    45000153: "音频过长",
-}
-
-def stream_volc_asr(audio_bytes: bytes):
-    """接入火山引擎双向流式识别"""
-    if not audio_bytes:
-        return None, "未检测到音频数据"
-    if not (VOLC_ASR_APP_KEY and VOLC_ASR_ACCESS_KEY):
-        return None, "未配置火山引擎密钥"
-    connect_id = str(uuid.uuid4().hex)
-    headers = [
-        f"X-Api-App-Key: {VOLC_ASR_APP_KEY}",
-        f"X-Api-Access-Key: {VOLC_ASR_ACCESS_KEY}",
-        f"X-Api-Resource-Id: {VOLC_ASR_RESOURCE_ID}",
-        f"X-Api-Connect-Id: {connect_id}",
-    ]
-    try:
-        ws = websocket.create_connection(VOLC_ASR_WS_URL, header=headers, timeout=30)
-    except websocket.WebSocketException as exc:
-        return None, f"连接语音识别服务失败：{exc}"
-    
-    # 简化处理逻辑...
-    return "语音识别功能已集成", None
-
-# ==================== 数据可视化 ====================
-def create_workload_chart(df):
-    """创建工作量统计图表"""
-    if df.empty:
-        return None
-    
-    # 按日期统计任务数量
-    df['date'] = pd.to_datetime(df['date'])
-    daily_counts = df.groupby(df['date'].dt.date).size().reset_index(name='count')
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=daily_counts['date'],
-        y=daily_counts['count'],
-        mode='lines+markers',
-        name='每日任务数',
-        line=dict(color=COLORS['accent'], width=3),
-        marker=dict(size=8, color=COLORS['accent'])
-    ))
-    
-    fig.update_layout(
-        title='每日工作量趋势',
-        xaxis_title='日期',
-        yaxis_title='任务数量',
-        font=dict(family=FONTS['family'], size=12),
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        margin=dict(l=50, r=50, t=50, b=50)
-    )
-    
-    return fig
-
-def create_category_pie_chart(df):
-    """创建类别分布饼图"""
-    if df.empty:
-        return None
-    
-    category_counts = df['category'].value_counts()
-    colors = [COLORS.get(cat.lower(), COLORS['other']) for cat in category_counts.index]
-    
-    fig = go.Figure(data=[go.Pie(
-        labels=category_counts.index,
-        values=category_counts.values,
-        marker_colors=colors,
-        hole=0.4
-    )])
-    
-    fig.update_layout(
-        title='任务类别分布',
-        font=dict(family=FONTS['family'], size=12),
-        paper_bgcolor='white',
-        margin=dict(l=50, r=50, t=50, b=50)
-    )
-    
-    return fig
 
 # ==================== 数据库操作 ====================
 def get_db_connection():
@@ -975,7 +952,8 @@ def show_event_action_dialog(task_id):
             st.rerun()
     with col2:
         if st.button("📝 编辑实验记录", type="primary", use_container_width=True):
-            show_record_editor_dialog(task_id)
+            st.session_state["open_record_editor_task_id"] = int(task_id)
+            st.rerun()
 
 @st.dialog("🧪 编辑实验记录", width="large")
 def show_record_editor_dialog(task_id: int):
@@ -1004,13 +982,6 @@ def show_record_editor_dialog(task_id: int):
     with col_main:
         st.text_input("标签", key=tags_key)
         st.text_area("实验记录内容", key=details_key, height=350)
-        
-        # 语音输入区域
-        st.markdown("#### 🎤 语音输入")
-        st.caption("录音将自动转写并追加到实验记录中")
-        
-        if st.button("🎙️ 开始录音", key=f"voice_record_{task_id}"):
-            st.info("录音功能已集成，点击后自动处理")
         
         # AI润色区域
         st.markdown("#### ✨ AI 润色助手")
@@ -1219,7 +1190,6 @@ def render_sidebar():
     """渲染侧边栏"""
     with st.sidebar:
         storage = get_storage_paths()
-        auth = _get_auth_settings()
         # Logo和标题
         st.markdown(f"""
         <div style="text-align: center; padding: 20px 0;">
@@ -1229,15 +1199,11 @@ def render_sidebar():
         """, unsafe_allow_html=True)
         if storage.get("user_label") and storage["user_label"] != "local":
             st.caption(f"当前用户：{storage['user_label']}")
-        if auth.get("mode") == "email_otp" and storage.get("user_label") and storage["user_label"] != "local":
-            if st.button("退出登录", use_container_width=True):
-                _clear_auth_session()
-                st.rerun()
         
         st.divider()
         
         # 导航菜单
-        nav_pages = ["📅 日历总览", "📖 科研归档", "📊 数据分析"]
+        nav_pages = ["📅 日历总览", "📖 实验记录"]
         page = st.radio("导航", nav_pages, key="nav_page")
         
         st.divider()
@@ -1261,12 +1227,6 @@ def render_sidebar():
             height=120,
             placeholder="例如：明天开始连续3天测体重，下周五处死取脑"
         )
-        
-        # 语音输入
-        with st.expander("🎤 语音输入"):
-            st.caption("点击下方按钮开始录音")
-            if st.button("🎙️ 录音", key="sidebar_voice", use_container_width=True):
-                st.info("语音功能已集成")
         
         # 参考文件上传
         uploaded_files = st.file_uploader(
@@ -1332,14 +1292,32 @@ def render_calendar_page():
         "height": 600
     }
     
-    # 获取任务数据
-    df = run_query("SELECT * FROM tasks ORDER BY date", fetch=True)
+    # 获取任务数据（支持搜索/筛选）
+    where_parts = []
+    params: list = []
+    if search_term:
+        wildcard = f"%{search_term}%"
+        where_parts.append("(task_name LIKE ? OR details LIKE ? OR tags LIKE ?)")
+        params.extend([wildcard, wildcard, wildcard])
+    if category_filter and category_filter != "全部":
+        where_parts.append("category=?")
+        params.append(category_filter)
+
+    where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    df = run_query("SELECT * FROM tasks" + where_sql + " ORDER BY date", tuple(params), fetch=True)
+    df_list = run_query("SELECT * FROM tasks" + where_sql + " ORDER BY date DESC, id DESC", tuple(params), fetch=True)
     events = []
     
     if not df.empty:
+        category_color = {
+            "科研": COLORS["research"],
+            "临床": COLORS["clinical"],
+            "课程": COLORS["course"],
+            "其他": COLORS["other"],
+        }
         for _, r in df.iterrows():
             task_id = int(r['id'])
-            color = COLORS.get(r['category'].lower(), COLORS['other'])
+            color = category_color.get(str(r.get("category", "")).strip(), COLORS["other"])
             
             details_text = (r['details'] or "").strip()
             record_done = bool(details_text)
@@ -1365,53 +1343,94 @@ def render_calendar_page():
             }
             events.append(event)
     
-    # 渲染日历
-    col_cal, col_info = st.columns([3, 1])
-    
-    with col_cal:
-        cal = calendar(
-            events=events,
-            options=cal_ops,
-            callbacks=['dateClick', 'eventClick', 'eventMouseEnter'],
-            key='main_calendar'
-        )
-        
-        # 处理日历回调
-        callback_type = cal.get("callback")
-        if callback_type == "dateClick":
-            d_str = cal["dateClick"].get("dateStr") or cal["dateClick"].get("date")
-            if d_str:
-                if "T" in d_str:
-                    d_str = d_str.split("T")[0]
-                show_add_task_dialog(d_str)
-        elif callback_type == "eventClick":
-            event_payload = cal.get("eventClick", {}).get("event", {})
-            props = event_payload.get("extendedProps", {})
-            task_id = props.get("task_id") or event_payload.get("id")
-            if task_id is not None:
-                show_event_action_dialog(int(str(task_id)))
-    
-    with col_info:
-        st.caption("📊 快速统计")
-        if not df.empty:
-            total_tasks = len(df)
-            completed_tasks = len(df[df['is_done'] == 1])
-            st.metric("总任务", total_tasks)
-            st.metric("已完成", completed_tasks)
-            st.metric("完成率", f"{completed_tasks/total_tasks*100:.1f}%")
-        else:
-            st.info("暂无任务数据")
+    # 渲染日历（移除右侧快速统计栏）
+    cal = calendar(
+        events=events,
+        options=cal_ops,
+        callbacks=['dateClick', 'eventClick', 'eventMouseEnter'],
+        key='main_calendar'
+    )
+
+    # 处理日历回调
+    callback_type = cal.get("callback")
+    if callback_type == "dateClick":
+        d_str = cal["dateClick"].get("dateStr") or cal["dateClick"].get("date")
+        if d_str:
+            if "T" in d_str:
+                d_str = d_str.split("T")[0]
+            show_add_task_dialog(d_str)
+    elif callback_type == "eventClick":
+        event_payload = cal.get("eventClick", {}).get("event", {})
+        props = event_payload.get("extendedProps", {})
+        task_id = props.get("task_id") or event_payload.get("id")
+        if task_id is not None:
+            show_event_action_dialog(int(str(task_id)))
+
+    st.divider()
+    st.subheader("📋 任务总列表")
+
+    with st.form("task_quick_add"):
+        c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+        new_name = c1.text_input("任务名称", placeholder="例如：测体重/灌胃/行为学测试")
+        new_date = c2.date_input("日期", value=datetime.now().date())
+        new_category = c3.selectbox("类型", ["科研", "临床", "课程", "其他"])
+        new_tags = c4.text_input("标签", value="#日常")
+        new_details = st.text_input("备注（可选）")
+        submitted = st.form_submit_button("添加任务", use_container_width=True)
+        if submitted:
+            if not new_name.strip():
+                st.warning("请填写任务名称")
+            else:
+                run_query(
+                    "INSERT INTO tasks (date, task_name, category, is_done, details, tags) VALUES (?, ?, ?, ?, ?, ?)",
+                    (new_date.strftime("%Y-%m-%d"), new_name.strip(), new_category, 0, new_details.strip(), new_tags.strip())
+                )
+                st.success("任务已添加")
+                st.rerun()
+
+    if df_list.empty:
+        st.info("暂无任务数据")
+        return
+
+    df_list['date'] = pd.to_datetime(df_list['date']).dt.date
+    header_cols = st.columns([0.7, 1.1, 0.8, 1.3, 3, 1.6])
+    header_cols[0].markdown("**完成**")
+    header_cols[1].markdown("**日期**")
+    header_cols[2].markdown("**类型**")
+    header_cols[3].markdown("**标签/记录**")
+    header_cols[4].markdown("**内容**")
+    header_cols[5].markdown("**操作**")
+
+    for _, row in df_list.iterrows():
+        with st.container():
+            c1, c2, c3, c4, c5, c6 = st.columns([0.7, 1.1, 0.8, 1.3, 3, 1.6])
+            done_val = bool(row['is_done'])
+            checked = c1.checkbox("", done_val, key=f"task_done_{row['id']}")
+            if checked != done_val:
+                run_query("UPDATE tasks SET is_done=? WHERE id=?", (1 if checked else 0, row['id']))
+                st.rerun()
+
+            c2.text(str(row['date']))
+            c3.caption(row['category'])
+            record_flag = "✅ 已写" if (row['details'] or "").strip() else "✏️ 待写"
+            c4.markdown(f"{row['tags'] or '-'} · {record_flag}")
+            if row['is_done']:
+                c5.markdown(f"~~{row['task_name']}~~")
+            else:
+                c5.text(row['task_name'])
+
+            action_col, record_col = c6.columns(2)
+            if action_col.button("详情", key=f"task_detail_{row['id']}"):
+                show_event_action_dialog(int(row['id']))
+            if record_col.button("记录", key=f"task_record_{row['id']}"):
+                show_record_editor_dialog(int(row['id']))
+
+            st.markdown("<hr style='margin:0.2em 0;opacity:0.1'>", unsafe_allow_html=True)
 
 # ==================== 主函数 ====================
 def main():
     """主函数"""
-    require_app_login()
     setup_page_config()
-    storage = get_storage_paths()
-    if str(_get_setting("LAB_DIARY_REQUIRE_SIGNIN", "0")).strip() in ("1", "true", "True"):
-        if storage.get("user_label") == "local":
-            st.error("此部署要求用户登录（用于多用户数据隔离），但当前未检测到登录用户。请启用平台登录（若可用），或设置 `LAB_DIARY_AUTH_MODE=email_otp` 使用应用内邮箱验证码登录；本地也可配置 `LAB_DIARY_USER_EMAIL` 进行测试。")
-            st.stop()
     init_and_migrate_db()
     auto_backup()
     
@@ -1421,14 +1440,17 @@ def main():
     
     # 渲染侧边栏并获取当前页面
     page = render_sidebar()
+
+    # 避免 Dialog 嵌套：在对话框内只设置标记并 rerun，真正打开编辑器在主渲染阶段完成
+    pending_record_task_id = st.session_state.pop("open_record_editor_task_id", None)
+    if pending_record_task_id is not None:
+        show_record_editor_dialog(int(pending_record_task_id))
     
     # 根据页面渲染内容
     if page == "📅 日历总览":
         render_calendar_page()
-    elif page == "📖 科研归档":
+    elif page == "📖 实验记录":
         render_archive_page()
-    elif page == "📊 数据分析":
-        render_analytics_page()
 
 if __name__ == "__main__":
     main()
@@ -1652,10 +1674,10 @@ def _convert_doc_via_win32(data_bytes: bytes) -> bytes | None:
 
 # ==================== 归档页面 ====================
 def render_archive_page():
-    """渲染科研归档页面"""
+    """渲染实验记录页面"""
     st.markdown(f"""
     <div style="background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-        <h1 style="color: {COLORS['primary']}; margin: 0 0 16px 0;">📖 科研归档</h1>
+        <h1 style="color: {COLORS['primary']}; margin: 0 0 16px 0;">📖 实验记录</h1>
         <p style="color: {COLORS['secondary']}; margin: 0;">管理和导出您的实验记录</p>
     </div>
     """, unsafe_allow_html=True)
@@ -1817,7 +1839,9 @@ def render_archive_page():
                         )
 
 def render_analytics_page():
-    """渲染数据分析页面"""
+    """数据分析页面（已下线）"""
+    st.info("“数据分析”功能已下线（不再维护）。")
+    return
     st.markdown(f"""
     <div style="background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
         <h1 style="color: {COLORS['primary']}; margin: 0 0 16px 0;">📊 数据分析</h1>

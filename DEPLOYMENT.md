@@ -255,7 +255,10 @@ docker rm lab-diary-ai
    - `VOLC_ASR_ACCESS_KEY`: your-access-key（可选）
    - `LAB_DIARY_AUTH_MODE`: email_otp（推荐：启用应用内邮箱验证码登录）
    - `LAB_DIARY_ALLOWED_EMAIL_DOMAINS`: yourorg.com（推荐：域名白名单，避免任何人都可请求验证码）
-   - `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`: 用于发送验证码邮件
+   - `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`: 用于发送验证码邮件（`SMTP_PASSWORD` 填 SMTP 授权码，不是邮箱密码）
+   - `SMTP_USE_TLS`: 1/0（587 通常用 STARTTLS）
+   - `SMTP_USE_SSL`: 1/0（465 通常用 SSL；若用 465，建议 `SMTP_USE_SSL=1` 且 `SMTP_USE_TLS=0`）
+   - （若部署平台禁止 SMTP 出网）可改用共享口令登录：`LAB_DIARY_AUTH_MODE=password` + `LAB_DIARY_SHARED_PASSWORD`（或 `LAB_DIARY_SHARED_PASSWORD_HASH`）
    - （可选）`LAB_DIARY_REQUIRE_SIGNIN`: 1（如果你的 Cloud 账号提供平台级登录）
 
 #### 步骤5: 部署
