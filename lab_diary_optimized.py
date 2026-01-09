@@ -13,10 +13,14 @@ import wave
 import struct
 import gzip
 import hashlib
+import secrets as py_secrets
+import smtplib
+import ssl
 import zipfile
 import base64
 import tempfile
 from io import BytesIO
+from email.message import EmailMessage
 from docx import Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
@@ -104,14 +108,177 @@ def _get_streamlit_user_email() -> str | None:
     return None
 
 
+def _parse_csv_list(value: str) -> list[str]:
+    if not value:
+        return []
+    parts = re.split(r"[,\s]+", str(value))
+    return [p.strip().lower() for p in parts if p.strip()]
+
+
+def _get_auth_settings() -> dict:
+    mode = str(_get_setting("LAB_DIARY_AUTH_MODE", "")).strip().lower()  # "email_otp" or ""
+    allowed_domains = _parse_csv_list(_get_setting("LAB_DIARY_ALLOWED_EMAIL_DOMAINS", ""))
+    allowed_emails = _parse_csv_list(_get_setting("LAB_DIARY_ALLOWED_EMAILS", ""))
+    session_minutes = int(str(_get_setting("LAB_DIARY_AUTH_SESSION_MINUTES", "720")).strip() or "720")
+    code_minutes = int(str(_get_setting("LAB_DIARY_AUTH_CODE_MINUTES", "10")).strip() or "10")
+    dev_show_code = str(_get_setting("LAB_DIARY_AUTH_DEV_SHOW_CODE", "0")).strip().lower() in ("1", "true", "yes")
+
+    smtp_host = str(_get_setting("SMTP_HOST", "")).strip()
+    smtp_port = int(str(_get_setting("SMTP_PORT", "587")).strip() or "587")
+    smtp_user = str(_get_setting("SMTP_USER", "")).strip()
+    smtp_password = str(_get_setting("SMTP_PASSWORD", "")).strip()
+    smtp_from = str(_get_setting("SMTP_FROM", "")).strip()
+    smtp_use_tls = str(_get_setting("SMTP_USE_TLS", "1")).strip().lower() in ("1", "true", "yes")
+
+    return {
+        "mode": mode,
+        "allowed_domains": allowed_domains,
+        "allowed_emails": allowed_emails,
+        "session_minutes": session_minutes,
+        "code_minutes": code_minutes,
+        "dev_show_code": dev_show_code,
+        "smtp_host": smtp_host,
+        "smtp_port": smtp_port,
+        "smtp_user": smtp_user,
+        "smtp_password": smtp_password,
+        "smtp_from": smtp_from,
+        "smtp_use_tls": smtp_use_tls,
+    }
+
+
+def _is_allowed_login_email(email: str, auth: dict) -> bool:
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return False
+    if auth["allowed_emails"] and email not in auth["allowed_emails"]:
+        return False
+    if auth["allowed_domains"]:
+        domain = email.split("@", 1)[1]
+        if domain not in auth["allowed_domains"]:
+            return False
+    return True
+
+
+def _send_email_login_code(email: str, code: str, auth: dict) -> None:
+    if auth["dev_show_code"]:
+        return
+    if not auth["smtp_host"] or not auth["smtp_from"]:
+        raise RuntimeError("Missing SMTP configuration (SMTP_HOST/SMTP_FROM).")
+
+    msg = EmailMessage()
+    msg["Subject"] = "Lab Diary AI 登录验证码"
+    msg["From"] = auth["smtp_from"]
+    msg["To"] = email
+    msg.set_content(
+        f"你的登录验证码是：{code}\n\n"
+        f"有效期：{auth['code_minutes']} 分钟\n\n"
+        "如非本人操作，请忽略此邮件。"
+    )
+
+    context = ssl.create_default_context()
+    with smtplib.SMTP(auth["smtp_host"], auth["smtp_port"], timeout=20) as server:
+        server.ehlo()
+        if auth["smtp_use_tls"]:
+            server.starttls(context=context)
+            server.ehlo()
+        if auth["smtp_user"] and auth["smtp_password"]:
+            server.login(auth["smtp_user"], auth["smtp_password"])
+        server.send_message(msg)
+
+
+def _clear_auth_session() -> None:
+    for key in list(st.session_state.keys()):
+        if key.startswith("auth_"):
+            del st.session_state[key]
+
+
+def require_app_login() -> None:
+    """
+    In-app login page (email OTP).
+    Enable by setting `LAB_DIARY_AUTH_MODE=email_otp` in Streamlit Cloud secrets.
+    """
+    auth = _get_auth_settings()
+    if auth["mode"] != "email_otp":
+        return
+
+    now = datetime.now()
+    authed_email = (st.session_state.get("auth_email") or "").strip().lower()
+    expires_at = st.session_state.get("auth_expires_at")
+    if authed_email and isinstance(expires_at, datetime) and expires_at > now:
+        return
+
+    st.set_page_config(page_title="Lab Diary AI 登录", layout="centered", page_icon="🔐")
+    st.title("🔐 登录 Lab Diary AI")
+    st.caption("输入邮箱获取验证码登录。")
+
+    email = st.text_input("邮箱", key="auth_input_email", placeholder="name@domain.com").strip().lower()
+    if email and not _is_allowed_login_email(email, auth):
+        if auth["allowed_domains"] or auth["allowed_emails"]:
+            st.error("该邮箱不在允许范围内。")
+        else:
+            st.warning("当前未配置允许邮箱/域名白名单：任何邮箱都可以请求验证码。建议设置 `LAB_DIARY_ALLOWED_EMAIL_DOMAINS`。")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("发送验证码", use_container_width=True):
+            if not email or "@" not in email:
+                st.error("请输入正确的邮箱。")
+            elif not _is_allowed_login_email(email, auth):
+                st.error("该邮箱不在允许范围内。")
+            else:
+                code = f"{py_secrets.randbelow(1000000):06d}"
+                st.session_state["auth_pending_email"] = email
+                st.session_state["auth_code_hash"] = hashlib.sha256(code.encode("utf-8")).hexdigest()
+                st.session_state["auth_code_expires_at"] = now + timedelta(minutes=auth["code_minutes"])
+                st.session_state["auth_code_sent_at"] = now
+                try:
+                    _send_email_login_code(email, code, auth)
+                    if auth["dev_show_code"]:
+                        st.info(f"DEV 模式：验证码是 {code}")
+                    st.success("验证码已发送，请查收邮箱。")
+                except Exception as exc:
+                    st.error(f"发送失败：{exc}")
+
+    with col2:
+        code_input = st.text_input("验证码", key="auth_input_code", placeholder="6 位数字").strip()
+        if st.button("登录", type="primary", use_container_width=True):
+            pending_email = (st.session_state.get("auth_pending_email") or "").strip().lower()
+            code_hash = st.session_state.get("auth_code_hash")
+            code_expires = st.session_state.get("auth_code_expires_at")
+
+            if not pending_email:
+                st.error("请先发送验证码。")
+            elif not isinstance(code_expires, datetime) or code_expires <= now:
+                st.error("验证码已过期，请重新发送。")
+            elif not code_input or not code_input.isdigit() or len(code_input) != 6:
+                st.error("请输入 6 位数字验证码。")
+            else:
+                input_hash = hashlib.sha256(code_input.encode("utf-8")).hexdigest()
+                if input_hash != code_hash:
+                    st.error("验证码错误。")
+                else:
+                    st.session_state["auth_email"] = pending_email
+                    st.session_state["auth_expires_at"] = now + timedelta(minutes=auth["session_minutes"])
+                    for k in ("auth_pending_email", "auth_code_hash", "auth_code_expires_at", "auth_code_sent_at", "auth_input_code"):
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.success("登录成功。")
+                    st.rerun()
+
+    st.divider()
+    st.caption("需要帮助？请联系管理员配置邮件服务器（SMTP）和允许域名白名单。")
+    st.stop()
+
+
 def get_storage_paths() -> dict:
     """
     Multi-user isolation:
     - If Streamlit provides a signed-in user email, store data in `data/users/<hash>/`.
     - Otherwise (local/dev), fall back to legacy paths in the repo root.
     """
+    session_email = str(st.session_state.get("auth_email", "")).strip().lower()
     override_email = _get_setting("LAB_DIARY_USER_EMAIL", "").strip().lower()
-    email = override_email or _get_streamlit_user_email()
+    email = session_email or override_email or _get_streamlit_user_email()
     if email:
         digest = hashlib.sha256(email.encode("utf-8")).hexdigest()[:16]
         root = os.path.join(DATA_DIR, "users", digest)
@@ -1052,6 +1219,7 @@ def render_sidebar():
     """渲染侧边栏"""
     with st.sidebar:
         storage = get_storage_paths()
+        auth = _get_auth_settings()
         # Logo和标题
         st.markdown(f"""
         <div style="text-align: center; padding: 20px 0;">
@@ -1061,6 +1229,10 @@ def render_sidebar():
         """, unsafe_allow_html=True)
         if storage.get("user_label") and storage["user_label"] != "local":
             st.caption(f"当前用户：{storage['user_label']}")
+        if auth.get("mode") == "email_otp" and storage.get("user_label") and storage["user_label"] != "local":
+            if st.button("退出登录", use_container_width=True):
+                _clear_auth_session()
+                st.rerun()
         
         st.divider()
         
@@ -1233,11 +1405,12 @@ def render_calendar_page():
 # ==================== 主函数 ====================
 def main():
     """主函数"""
+    require_app_login()
     setup_page_config()
     storage = get_storage_paths()
     if str(_get_setting("LAB_DIARY_REQUIRE_SIGNIN", "0")).strip() in ("1", "true", "True"):
         if storage.get("user_label") == "local":
-            st.error("此部署要求用户登录（用于多用户数据隔离），但当前未检测到登录用户。请在 Streamlit Cloud 开启 Require sign-in，或配置 `LAB_DIARY_USER_EMAIL` 进行本地测试。")
+            st.error("此部署要求用户登录（用于多用户数据隔离），但当前未检测到登录用户。请启用平台登录（若可用），或设置 `LAB_DIARY_AUTH_MODE=email_otp` 使用应用内邮箱验证码登录；本地也可配置 `LAB_DIARY_USER_EMAIL` 进行测试。")
             st.stop()
     init_and_migrate_db()
     auto_backup()
