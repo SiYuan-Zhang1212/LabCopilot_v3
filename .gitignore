@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Local data
+my_lab_data.db
+uploads/
+backups/
+data/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
