@@ -253,7 +253,10 @@ docker rm lab-diary-ai
    - `DEEPSEEK_API_KEY`: your-api-key
    - `VOLC_ASR_APP_KEY`: your-app-key（可选）
    - `VOLC_ASR_ACCESS_KEY`: your-access-key（可选）
-   - `LAB_DIARY_REQUIRE_SIGNIN`: 1（推荐：强制要求登录以实现多用户数据隔离）
+   - `LAB_DIARY_AUTH_MODE`: email_otp（推荐：启用应用内邮箱验证码登录）
+   - `LAB_DIARY_ALLOWED_EMAIL_DOMAINS`: yourorg.com（推荐：域名白名单，避免任何人都可请求验证码）
+   - `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`: 用于发送验证码邮件
+   - （可选）`LAB_DIARY_REQUIRE_SIGNIN`: 1（如果你的 Cloud 账号提供平台级登录）
 
 #### 步骤5: 部署
 
@@ -267,7 +270,9 @@ docker rm lab-diary-ai
 2. 打开 “Require sign-in / Private app / Manage access”（不同版本文案略有差异）
 3. 在允许访问列表中添加用户邮箱
 
-> 说明：Streamlit Cloud 的访问控制能力可能因版本/套餐不同而不同；如果你的界面里没有相关选项，我可以根据你的实际控制台截图给出对应路径。
+如果你的界面里没有这些选项（Community Cloud 常见），请使用应用内登录：
+- 在 Secrets 中设置 `LAB_DIARY_AUTH_MODE=email_otp` 并配置 SMTP
+- 可选设置 `LAB_DIARY_ALLOWED_EMAIL_DOMAINS`，实现“无需手动逐个添加邮箱”的访问控制
 
 #### 数据持久化提醒
 Streamlit Cloud 上的本地文件（包含 `my_lab_data.db`、`uploads/`、`backups/`）通常不保证长期持久化；如果你希望“多用户长期使用且数据不丢”，建议：
@@ -565,6 +570,14 @@ server {
 ```
 
 #### 3. 访问控制
+
+推荐（无需平台白名单）：启用项目内置“邮箱验证码登录”（适合 Community Cloud）。
+
+1. 在 Secrets 中设置：
+   - `LAB_DIARY_AUTH_MODE=email_otp`
+   - `LAB_DIARY_ALLOWED_EMAIL_DOMAINS=yourorg.com`（建议）
+   - 配置 `SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM`
+2. 部署后访问应用会先进入登录页，登录成功后按邮箱自动隔离数据（`data/users/<hash>/`）。
 
 添加基本认证：
 
