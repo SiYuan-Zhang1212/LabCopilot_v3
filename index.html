@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lab Diary AI - 智能实验记录管理工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+            color: #1e293b;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        header {
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+        }
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1e293b;
+            text-decoration: none;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 30px;
+            list-style: none;
+        }
+        
+        .nav-links a {
+            color: #64748b;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s ease;
+        }
+        
+        .nav-links a:hover {
+            color: #3b82f6;
+        }
+        
+        .hero {
+            padding: 80px 0;
+            text-align: center;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            color: white;
+            margin-bottom: 80px;
+        }
+        
+        .hero h1 {
+            font-size: 48px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            background: linear-gradient(135deg, #ffffff 0%, #e2e8f0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero p {
+            font-size: 20px;
+            margin-bottom: 30px;
+            opacity: 0.9;
+        }
+        
+        .cta-button {
+            display: inline-block;
+            background: white;
+            color: #3b82f6;
+            padding: 16px 32px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 18px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+        }
+        
+        .features {
+            padding: 80px 0;
+        }
+        
+        .section-title {
+            text-align: center;
+            font-size: 36px;
+            font-weight: 700;
+            margin-bottom: 60px;
+            color: #1e293b;
+        }
+        
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+            margin-bottom: 80px;
+        }
+        
+        .feature-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            transition: all 0.3s ease;
+        }
+        
+        .feature-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 12px 32px rgba(0,0,0,0.15);
+        }
+        
+        .feature-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        
+        .feature-card h3 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1e293b;
+        }
+        
+        .feature-card p {
+            color: #64748b;
+            line-height: 1.6;
+        }
+        
+        .demo-section {
+            background: white;
+            padding: 80px 0;
+            margin: 80px 0;
+        }
+        
+        .demo-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 40px;
+            align-items: center;
+        }
+        
+        .demo-content h2 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: #1e293b;
+        }
+        
+        .demo-content p {
+            font-size: 18px;
+            color: #64748b;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        
+        .demo-image {
+            background: #f1f5f9;
+            border-radius: 16px;
+            padding: 40px;
+            text-align: center;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            color: #64748b;
+        }
+        
+        .stats {
+            background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+            color: white;
+            padding: 80px 0;
+            text-align: center;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 40px;
+            margin-top: 40px;
+        }
+        
+        .stat-item h3 {
+            font-size: 48px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .stat-item p {
+            font-size: 18px;
+            opacity: 0.8;
+        }
+        
+        .download-section {
+            padding: 80px 0;
+            text-align: center;
+        }
+        
+        .download-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+            margin-top: 60px;
+        }
+        
+        .download-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        
+        .download-card h3 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: #1e293b;
+        }
+        
+        .download-card p {
+            color: #64748b;
+            margin-bottom: 30px;
+        }
+        
+        .download-btn {
+            display: inline-block;
+            background: #3b82f6;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+        }
+        
+        .download-btn:hover {
+            background: #2563eb;
+            transform: translateY(-2px);
+        }
+        
+        footer {
+            background: #1e293b;
+            color: white;
+            padding: 40px 0;
+            text-align: center;
+        }
+        
+        footer p {
+            opacity: 0.8;
+        }
+        
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 36px;
+            }
+            
+            .nav-links {
+                display: none;
+            }
+            
+            .features-grid,
+            .demo-grid,
+            .stats-grid,
+            .download-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <nav>
+                <a href="#" class="logo">🔬 Lab Diary AI</a>
+                <ul class="nav-links">
+                    <li><a href="#features">功能特性</a></li>
+                    <li><a href="#demo">演示</a></li>
+                    <li><a href="#download">下载</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <section class="hero">
+        <div class="container">
+            <h1>智能实验记录管理工具</h1>
+            <p>结合AI技术，让科研记录更高效、更准确、更智能</p>
+            <a href="https://lab-diary-ai.streamlit.app" class="cta-button">立即体验</a>
+        </div>
+    </section>
+
+    <section id="features" class="features">
+        <div class="container">
+            <h2 class="section-title">核心功能</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🤖</div>
+                    <h3>AI智能助手</h3>
+                    <p>自然语言解析、智能元数据提取、语音输入、AI润色，让记录更轻松</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📅</div>
+                    <h3>智能日程管理</h3>
+                    <p>日历视图、任务分类、状态追踪、快速操作，一目了然</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🪄</div>
+                    <h3>历史记录迁移</h3>
+                    <p>保护原始内容，一字不改导入，多格式支持，批量处理</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>数据分析可视化</h3>
+                    <p>工作量统计、类别分布、标签云、周报生成，数据驱动</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎤</div>
+                    <h3>语音交互</h3>
+                    <p>高精度语音识别、实时转写、语音指令，解放双手</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📤</div>
+                    <h3>导出与归档</h3>
+                    <p>多格式导出、批量归档、自定义模板，灵活便捷</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="demo" class="demo-section">
+        <div class="container">
+            <h2 class="section-title">功能演示</h2>
+            <div class="demo-grid">
+                <div class="demo-content">
+                    <h2>AI智能排程</h2>
+                    <p>用自然语言描述您的实验计划，AI自动识别并创建结构化任务。支持连续多天任务、周期性实验、复杂时间安排。</p>
+                    <p>例如："明天开始连续3天做CUMS模型，下周五处死取脑"</p>
+                </div>
+                <div class="demo-image">
+                    📅 AI智能排程界面<br>
+                    自动生成任务列表<br>
+                    支持预览和确认
+                </div>
+            </div>
+            <div class="demo-grid" style="margin-top: 80px;">
+                <div class="demo-image">
+                    📝 实验记录编辑器<br>
+                    语音输入支持<br>
+                    AI润色助手
+                </div>
+                <div class="demo-content">
+                    <h2>智能记录编辑</h2>
+                    <p>强大的实验记录编辑器，支持语音输入转文字、AI智能润色、附件上传。保护您的原始记录，AI只提取元数据。</p>
+                    <p>集成火山引擎ASR，提供高精度的中文语音识别。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="stats">
+        <div class="container">
+            <h2 class="section-title" style="color: white;">数据说话</h2>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <h3>10x</h3>
+                    <p>记录效率提升</p>
+                </div>
+                <div class="stat-item">
+                    <h3>100%</h3>
+                    <p>数据完整性</p>
+                </div>
+                <div class="stat-item">
+                    <h3>24/7</h3>
+                    <p>随时可用</p>
+                </div>
+                <div class="stat-item">
+                    <h3>0</h3>
+                    <p>数据丢失</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="download" class="download-section">
+        <div class="container">
+            <h2 class="section-title">开始使用</h2>
+            <div class="download-grid">
+                <div class="download-card">
+                    <h3>🚀 在线体验</h3>
+                    <p>无需安装，直接在浏览器中使用</p>
+                    <a href="https://lab-diary-ai.streamlit.app" class="download-btn">立即体验</a>
+                </div>
+                <div class="download-card">
+                    <h3>💻 本地部署</h3>
+                    <p>下载代码，在本地环境中运行</p>
+                    <a href="lab_diary_optimized.py" class="download-btn" download>下载代码</a>
+                </div>
+                <div class="download-card">
+                    <h3>🐳 Docker部署</h3>
+                    <p>使用Docker快速部署到服务器</p>
+                    <a href="DEPLOYMENT.md" class="download-btn">查看指南</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2024 Lab Diary AI. 让科研记录更智能、更高效.</p>
+        </div>
+    </footer>
+</body>
+</html>
